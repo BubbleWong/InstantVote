@@ -36,7 +36,17 @@ function tokenHash(token) {
 function validateUuid(value, label) {
   const normalized = String(value || "");
   if (!UUID_PATTERN.test(normalized)) throw httpError(400, `${label} must be a valid UUID`);
-  return normalized;
+  return normalized.toLowerCase();
+}
+
+function validateJsonObject(body, { allowed, required = allowed }) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw httpError(400, "Request body must be a JSON object");
+  }
+  const unknown = Object.keys(body).filter((key) => !allowed.includes(key));
+  if (unknown.length) throw httpError(400, `Unknown request field: ${unknown[0]}`);
+  const missing = required.filter((key) => !Object.hasOwn(body, key));
+  if (missing.length) throw httpError(400, `Missing required field: ${missing[0]}`);
 }
 
 function cleanCredentials(body) {
@@ -59,8 +69,9 @@ async function issueAdminSession(ctx, pool, userId, sessionDays) {
   const token = crypto.randomBytes(32).toString("base64url");
   const id = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + sessionDays * 86400000);
-  await pool.query(
-    `INSERT INTO admin_sessions (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)`,
+  const result = await pool.query(
+    `INSERT INTO admin_sessions (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)
+     RETURNING created_at, expires_at`,
     [id, userId, tokenHash(token), expiresAt],
   );
   ctx.cookies.set(SESSION_COOKIE, token, {
@@ -71,6 +82,7 @@ async function issueAdminSession(ctx, pool, userId, sessionDays) {
     maxAge: sessionDays * 86400000,
     path: "/",
   });
+  return { id, createdAt: result.rows[0].created_at, expiresAt: result.rows[0].expires_at };
 }
 
 async function currentAdmin(ctx, pool) {
@@ -78,7 +90,8 @@ async function currentAdmin(ctx, pool) {
   if (!token) return null;
   const result = await pool.query(
     `
-      SELECT u.id, u.username, s.id AS session_id
+      SELECT u.id, u.username, s.id AS session_id,
+             s.created_at AS session_created_at, s.expires_at AS session_expires_at
       FROM admin_sessions s
       JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = $1
@@ -91,7 +104,13 @@ async function currentAdmin(ctx, pool) {
   const user = result.rows[0];
   if (!user) return null;
   await pool.query(`UPDATE admin_sessions SET last_used_at = NOW() WHERE id = $1`, [user.session_id]);
-  return { id: user.id, username: user.username, sessionId: user.session_id };
+  return {
+    id: user.id,
+    username: user.username,
+    sessionId: user.session_id,
+    sessionCreatedAt: user.session_created_at,
+    sessionExpiresAt: user.session_expires_at,
+  };
 }
 
 function answerPayload(options) {
@@ -99,11 +118,15 @@ function answerPayload(options) {
     throw httpError(400, "At least two answer choices are required");
   }
   if (options.length > 20) throw httpError(400, "A session can have at most 20 answer choices");
-  const parsed = options.map((option, index) => ({
-    id: option.id && UUID_PATTERN.test(String(option.id)) ? String(option.id) : crypto.randomUUID(),
-    text: String(option.text || "").trim(),
-    sortOrder: index,
-  }));
+  const parsed = options.map((option, index) => {
+    validateJsonObject(option, { allowed: ["id", "text"], required: ["text"] });
+    if (Object.hasOwn(option, "id") && !UUID_PATTERN.test(String(option.id))) throw httpError(400, "Answer ID must be a valid UUID");
+    return {
+      id: Object.hasOwn(option, "id") ? String(option.id).toLowerCase() : crypto.randomUUID(),
+      text: String(option.text || "").trim(),
+      sortOrder: index,
+    };
+  });
   if (parsed.some((option) => !option.text || option.text.length > 200)) {
     throw httpError(400, "Each answer choice must be between 1 and 200 characters");
   }
@@ -149,7 +172,7 @@ async function sessionVoteCount(pool, sessionId) {
 export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION_DAYS || 30) } = {}) {
   if (!pool) throw new Error("createApp requires a PostgreSQL pool");
   const app = new Koa();
-  const router = new Router({ prefix: "/api" });
+  const router = new Router({ prefix: "/api/v1" });
   const failedLogins = new Map();
   app.proxy = true;
 
@@ -166,6 +189,11 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     }
   });
 
+  app.use(async (ctx, next) => {
+    if (ctx.path.startsWith("/api/")) ctx.set("Cache-Control", "no-store");
+    await next();
+  });
+
   app.use(bodyParser({ jsonLimit: "256kb" }));
 
   const requireAdmin = async (ctx, next) => {
@@ -175,7 +203,8 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     await next();
   };
 
-  router.post("/auth/register", async (ctx) => {
+  router.post("/users", async (ctx) => {
+    validateJsonObject(ctx.request.body, { allowed: ["username", "password"] });
     const credentials = cleanCredentials(ctx.request.body);
     validateRegistration(credentials);
     const passwordHash = await bcrypt.hash(credentials.password, PASSWORD_ROUNDS);
@@ -187,10 +216,18 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     );
     await issueAdminSession(ctx, pool, id, sessionDays);
     ctx.status = 201;
-    ctx.body = { user: result.rows[0] };
+    ctx.set("Location", `/api/v1/users/${id}`);
+    ctx.body = result.rows[0];
   });
 
-  router.post("/auth/login", async (ctx) => {
+  router.get("/users/:userId", requireAdmin, async (ctx) => {
+    const userId = validateUuid(ctx.params.userId, "User ID");
+    if (userId !== ctx.state.admin.id) throw httpError(404, "User not found");
+    ctx.body = { id: ctx.state.admin.id, username: ctx.state.admin.username };
+  });
+
+  router.post("/login-sessions", async (ctx) => {
+    validateJsonObject(ctx.request.body, { allowed: ["username", "password"] });
     const key = ctx.ip;
     const attempt = failedLogins.get(key);
     if (attempt?.blockedUntil > Date.now()) throw httpError(429, "Too many sign-in attempts. Try again shortly.");
@@ -209,17 +246,24 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
       throw httpError(401, "Incorrect username or password");
     }
     failedLogins.delete(key);
-    await issueAdminSession(ctx, pool, user.id, sessionDays);
-    ctx.body = { user: { id: user.id, username: user.username } };
+    const loginSession = await issueAdminSession(ctx, pool, user.id, sessionDays);
+    ctx.status = 201;
+    ctx.set("Location", "/api/v1/login-sessions/current");
+    ctx.body = { ...loginSession, user: { id: user.id, username: user.username } };
   });
 
-  router.get("/auth/me", async (ctx) => {
+  router.get("/login-sessions/current", async (ctx) => {
     const user = await currentAdmin(ctx, pool);
     if (!user) throw httpError(401, "Not signed in");
-    ctx.body = { user: { id: user.id, username: user.username } };
+    ctx.body = {
+      id: user.sessionId,
+      createdAt: user.sessionCreatedAt,
+      expiresAt: user.sessionExpiresAt,
+      user: { id: user.id, username: user.username },
+    };
   });
 
-  router.post("/auth/logout", async (ctx) => {
+  router.delete("/login-sessions/current", async (ctx) => {
     const token = ctx.cookies.get(SESSION_COOKIE);
     if (token) {
       await pool.query(`UPDATE admin_sessions SET revoked_at = NOW() WHERE token_hash = $1`, [tokenHash(token)]);
@@ -228,7 +272,7 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     ctx.status = 204;
   });
 
-  router.get("/sessions", requireAdmin, async (ctx) => {
+  router.get("/voting-sessions", requireAdmin, async (ctx) => {
     const result = await pool.query(
       `
         SELECT s.id, s.question, s.is_open AS live, s.created_at, s.updated_at,
@@ -254,7 +298,7 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     }));
   });
 
-  router.post("/sessions", requireAdmin, async (ctx) => {
+  router.post("/voting-sessions", requireAdmin, async (ctx) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -273,6 +317,7 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
       }
       await client.query("COMMIT");
       ctx.status = 201;
+      ctx.set("Location", `/api/v1/voting-sessions/${id}`);
       ctx.body = { id, question: created.rows[0].question, optionsCount: 3, totalVotes: 0, live: true, createdAt: created.rows[0].created_at, updatedAt: created.rows[0].updated_at };
     } catch (error) {
       await client.query("ROLLBACK");
@@ -282,14 +327,15 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     }
   });
 
-  router.get("/sessions/:id", requireAdmin, async (ctx) => {
-    const session = await ownedSession(pool, ctx.params.id, ctx.state.admin.id);
+  router.get("/voting-sessions/:sessionId", requireAdmin, async (ctx) => {
+    const session = await ownedSession(pool, ctx.params.sessionId, ctx.state.admin.id);
     const [options, totalVotes] = await Promise.all([sessionAnswers(pool, session.id), sessionVoteCount(pool, session.id)]);
     const votingUrl = `${requestOrigin(ctx)}/vote/${session.id}`;
     ctx.body = {
       id: session.id,
       question: session.question,
       options,
+      optionsCount: options.length,
       live: session.is_open,
       createdAt: session.created_at,
       updatedAt: session.updated_at,
@@ -299,12 +345,15 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     };
   });
 
-  router.patch("/sessions/:id", requireAdmin, async (ctx) => {
-    const session = await ownedSession(pool, ctx.params.id, ctx.state.admin.id);
+  router.put("/voting-sessions/:sessionId", requireAdmin, async (ctx) => {
+    const session = await ownedSession(pool, ctx.params.sessionId, ctx.state.admin.id);
+    validateJsonObject(ctx.request.body, { allowed: ["question", "options", "live"] });
     const question = String(ctx.request.body?.question || "").trim();
     if (!question || question.length > 500) throw httpError(400, "Voting topic must be between 1 and 500 characters");
+    if (typeof ctx.request.body.live !== "boolean") throw httpError(400, "Live must be a boolean");
     const options = answerPayload(ctx.request.body?.options);
     const client = await pool.connect();
+    let updatedSession;
     try {
       await client.query("BEGIN");
       const submittedIds = options.map((option) => option.id);
@@ -336,12 +385,22 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
           [option.id, session.id, option.text, option.sortOrder],
         );
       }
-      await client.query(
-        `UPDATE vote_sessions SET question = $1, is_open = $2, updated_at = NOW() WHERE id = $3`,
-        [question, ctx.request.body?.live !== false, session.id],
+      const updated = await client.query(
+        `UPDATE vote_sessions SET question = $1, is_open = $2, updated_at = NOW() WHERE id = $3
+         RETURNING created_at, updated_at`,
+        [question, ctx.request.body.live, session.id],
       );
+      updatedSession = updated.rows[0];
       await client.query("COMMIT");
-      ctx.body = { id: session.id, question, optionsCount: options.length, totalVotes: await sessionVoteCount(pool, session.id), live: ctx.request.body?.live !== false };
+      ctx.body = {
+        id: session.id,
+        question,
+        optionsCount: options.length,
+        totalVotes: await sessionVoteCount(pool, session.id),
+        live: ctx.request.body.live,
+        createdAt: updatedSession.created_at,
+        updatedAt: updatedSession.updated_at,
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -350,18 +409,18 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     }
   });
 
-  router.delete("/sessions/:id", requireAdmin, async (ctx) => {
+  router.delete("/voting-sessions/:sessionId", requireAdmin, async (ctx) => {
     const result = await pool.query(
       `UPDATE vote_sessions SET deleted_at = NOW(), is_open = FALSE, updated_at = NOW()
        WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING id`,
-      [validateUuid(ctx.params.id, "Session ID"), ctx.state.admin.id],
+      [validateUuid(ctx.params.sessionId, "Session ID"), ctx.state.admin.id],
     );
     if (!result.rows[0]) throw httpError(404, "Voting session not found");
     ctx.status = 204;
   });
 
-  router.get("/sessions/:id/results", requireAdmin, async (ctx) => {
-    const session = await ownedSession(pool, ctx.params.id, ctx.state.admin.id);
+  router.get("/voting-sessions/:sessionId/results", requireAdmin, async (ctx) => {
+    const session = await ownedSession(pool, ctx.params.sessionId, ctx.state.admin.id);
     const result = await pool.query(
       `
         SELECT a.id, a.answer_text AS text, a.sort_order, COUNT(v.id)::INTEGER AS votes
@@ -384,35 +443,76 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     };
   });
 
-  router.get("/vote/:id", async (ctx) => {
-    const session = await publicSession(pool, ctx.params.id);
+  router.get("/ballots/:sessionId", async (ctx) => {
+    const session = await publicSession(pool, ctx.params.sessionId);
     ctx.body = { id: session.id, question: session.question, options: await sessionAnswers(pool, session.id), live: session.is_open };
   });
 
-  router.post("/vote/:id", async (ctx) => {
-    const session = await publicSession(pool, ctx.params.id);
+  router.get("/ballots/:sessionId/votes/:guestId", async (ctx) => {
+    const session = await publicSession(pool, ctx.params.sessionId);
+    const guestId = validateUuid(ctx.params.guestId, "Guest ID");
+    const result = await pool.query(
+      `SELECT id, answer_id, created_at, updated_at FROM votes
+       WHERE vote_session_id = $1 AND guest_id = $2`,
+      [session.id, guestId],
+    );
+    const vote = result.rows[0];
+    if (!vote) throw httpError(404, "Vote not found");
+    ctx.body = {
+      id: vote.id,
+      sessionId: session.id,
+      guestId,
+      answerId: vote.answer_id,
+      createdAt: vote.created_at,
+      updatedAt: vote.updated_at,
+    };
+  });
+
+  router.put("/ballots/:sessionId/votes/:guestId", async (ctx) => {
+    const session = await publicSession(pool, ctx.params.sessionId);
     if (!session.is_open) throw httpError(409, "This voting session is closed");
-    const answerId = validateUuid(ctx.request.body?.optionId, "Answer ID");
-    const guestId = validateUuid(ctx.request.body?.guestId, "Guest ID");
+    validateJsonObject(ctx.request.body, { allowed: ["answerId"] });
+    const answerId = validateUuid(ctx.request.body?.answerId, "Answer ID");
+    const guestId = validateUuid(ctx.params.guestId, "Guest ID");
     const answer = await pool.query(`SELECT id FROM answers WHERE id = $1 AND vote_session_id = $2`, [answerId, session.id]);
     if (!answer.rows[0]) throw httpError(400, "That answer choice does not exist");
-    await pool.query(
+    const inserted = await pool.query(
       `
         INSERT INTO votes (id, vote_session_id, answer_id, guest_id)
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (guest_id, vote_session_id)
-        DO UPDATE SET answer_id = EXCLUDED.answer_id, updated_at = NOW()
+        DO NOTHING
+        RETURNING id, created_at, updated_at
       `,
       [crypto.randomUUID(), session.id, answerId, guestId],
     );
-    ctx.body = { optionId: answerId, totalVotes: await sessionVoteCount(pool, session.id) };
+    const created = Boolean(inserted.rows[0]);
+    const vote = created ? inserted.rows[0] : (await pool.query(
+      `UPDATE votes
+       SET answer_id = $1,
+           updated_at = CASE WHEN answer_id <> $1 THEN NOW() ELSE updated_at END
+       WHERE guest_id = $2 AND vote_session_id = $3
+       RETURNING id, created_at, updated_at`,
+      [answerId, guestId, session.id],
+    )).rows[0];
+    ctx.status = created ? 201 : 200;
+    ctx.set("Location", `/api/v1/ballots/${session.id}/votes/${guestId}`);
+    ctx.body = {
+      id: vote.id,
+      sessionId: session.id,
+      guestId,
+      answerId,
+      totalVotes: await sessionVoteCount(pool, session.id),
+      createdAt: vote.created_at,
+      updatedAt: vote.updated_at,
+    };
   });
 
-  router.get("/voting-history", async (ctx) => {
-    const guestId = validateUuid(ctx.get("x-guest-id"), "Guest ID");
+  router.get("/guests/:guestId/votes", async (ctx) => {
+    const guestId = validateUuid(ctx.params.guestId, "Guest ID");
     const result = await pool.query(
       `
-        SELECT v.updated_at, s.id AS session_id, s.question, s.is_open,
+        SELECT v.id AS vote_id, v.updated_at, s.id AS session_id, s.question, s.is_open,
                s.deleted_at, a.id AS answer_id, a.answer_text
         FROM votes v
         JOIN vote_sessions s ON s.id = v.vote_session_id
@@ -423,6 +523,7 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
       [guestId],
     );
     ctx.body = result.rows.map((row) => ({
+      voteId: row.vote_id,
       sessionId: row.session_id,
       question: row.question,
       answerId: row.answer_id,
@@ -435,6 +536,14 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
 
   app.use(router.routes());
   app.use(router.allowedMethods());
+  app.use(async (ctx, next) => {
+    if (ctx.path.startsWith("/api/")) {
+      ctx.status = 404;
+      ctx.body = { error: "API resource not found" };
+      return;
+    }
+    await next();
+  });
   app.use(serve(path.join(root, "public")));
   app.use(async (ctx) => {
     if (ctx.method !== "GET") {

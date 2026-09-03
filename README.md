@@ -25,6 +25,12 @@ npm start
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## API
+
+- In-app reference: [http://localhost:3000/api-docs](http://localhost:3000/api-docs)
+- OpenAPI 3.1 specification: [http://localhost:3000/openapi.json](http://localhost:3000/openapi.json)
+- Versioned API base path: `/api/v1`
+
 ## Tests
 
 ```bash

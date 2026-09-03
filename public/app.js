@@ -7,6 +7,7 @@ let currentUser = null;
 let saveTimer = null;
 let refreshTimer = null;
 let previousResults = null;
+let renderedRoute = null;
 
 const palette = ["blue", "coral", "violet", "mint", "amber", "rose"];
 const symbols = ["✦", "♪", "◆", "●", "✺", "▲"];
@@ -46,6 +47,7 @@ function profile() {
   if (!currentUser) return "";
   const initials = currentUser.username.slice(0, 2).toUpperCase();
   return `<div class="profile admin-profile">
+    <a class="docs-link" href="/api-docs" data-link>API docs</a>
     <span class="avatar">${escapeHtml(initials)}</span>
     <span class="profile-copy"><strong>${escapeHtml(currentUser.username)}</strong><small>Account owner</small></span>
     <button class="logout-button" id="logout-button">Sign out</button>
@@ -90,7 +92,7 @@ function bindLinks() {
     const button = document.querySelector("#logout-button");
     button.disabled = true;
     button.textContent = "Signing out…";
-    try { await api("/api/auth/logout", { method: "POST", body: "{}" }); } catch {}
+    try { await api("/api/v1/login-sessions/current", { method: "DELETE" }); } catch {}
     currentUser = null;
     activeSession = null;
     navigate("/");
@@ -100,7 +102,7 @@ function bindLinks() {
 async function requireAdmin() {
   if (currentUser) return true;
   try {
-    const result = await api("/api/auth/me");
+    const result = await api("/api/v1/login-sessions/current");
     currentUser = result.user;
     return true;
   } catch (error) {
@@ -133,7 +135,7 @@ function renderAuth(mode = "login", message = "") {
           <label>Password<input name="password" type="password" autocomplete="${registering ? "new-password" : "current-password"}" required minlength="10" placeholder="At least 10 characters" /></label>
           <button class="primary auth-submit" type="submit">${registering ? "Create account" : "Sign in"}</button>
         </form>
-        <p class="auth-footnote">Your account is for managing voting sessions. Guests vote anonymously with a device ID.</p>
+        <p class="auth-footnote">Your account is for managing voting sessions. Guests vote anonymously with a device ID. <a href="/api-docs" data-link>View API docs</a>.</p>
       </section>
     </main>
   </div>`;
@@ -147,8 +149,8 @@ function renderAuth(mode = "login", message = "") {
     button.textContent = registering ? "Creating account…" : "Signing in…";
     const data = Object.fromEntries(new FormData(form));
     try {
-      const result = await api(registering ? "/api/auth/register" : "/api/auth/login", { method: "POST", body: JSON.stringify(data) });
-      currentUser = result.user;
+      const result = await api(registering ? "/api/v1/users" : "/api/v1/login-sessions", { method: "POST", body: JSON.stringify(data) });
+      currentUser = registering ? result : result.user;
       window.history.replaceState({}, "", "/");
       renderDashboard();
     } catch (error) {
@@ -161,7 +163,7 @@ async function renderDashboard() {
   loading("Opening your workspace…");
   if (!(await requireAdmin())) return;
   try {
-    const sessions = await api("/api/sessions");
+    const sessions = await api("/api/v1/voting-sessions");
     const rows = sessions.length
       ? sessions.map((session, index) => `<article class="session-row" data-session="${escapeHtml(session.id)}" tabindex="0" role="link" aria-label="Edit ${escapeHtml(session.question)}">
           <div class="session-main"><div class="card-icon ${palette[index % palette.length]}">${symbols[index % symbols.length]}</div><div class="session-copy"><div class="session-meta"><span class="status ${session.live ? "live" : "closed"}"><i></i>${session.live ? "Live" : "Closed"}</span><span>${session.optionsCount} answer choices</span></div><h2>${escapeHtml(session.question)}</h2></div></div>
@@ -170,12 +172,26 @@ async function renderDashboard() {
         </article>`).join("")
       : `<div class="empty-state"><div class="card-icon blue">✦</div><h2>Your first voting topic starts here</h2><p>Create a session, add a few choices, then share it with your audience.</p><button class="primary" id="empty-new">Create a session</button></div>`;
 
-    app.innerHTML = `<div class="shell"><header class="topbar">${brand()}${profile()}</header><section class="dashboard"><div class="page-heading"><div><p class="eyebrow">YOUR WORKSPACE</p><h1>Voting sessions</h1><p>Create a voting topic, share it with the room, and watch the answers roll in.</p></div><button class="primary" id="new-session"><span>＋</span> New session</button></div><div class="session-list">${rows}</div></section></div>`;
+    app.innerHTML = `<div class="shell dashboard-shell"><header class="topbar">${brand()}${profile()}</header><section class="dashboard"><div class="page-heading"><div><p class="eyebrow">YOUR WORKSPACE</p><h1>Voting sessions</h1><p>Create a voting topic, share it with the room, and watch the answers roll in.</p></div><button class="primary" id="new-session"><span>＋</span> New session</button></div><div class="session-list">${rows}</div></section>
+      <footer class="dashboard-footer"><div class="dashboard-footer-inner">
+        <p class="footer-copyright">
+          <a href="https://bubbleh.com" target="_blank" rel="noopener noreferrer">© 2026 bubbleh.com</a>
+          <span aria-hidden="true">|</span>
+          <a class="footer-github-link" href="https://github.com/BubbleWong/InstantVote" target="_blank" rel="noopener noreferrer" aria-label="InstantVote on GitHub">
+            <svg class="footer-github-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path fill="currentColor" d="M8 0C3.58 0 0 3.64 0 8.13c0 3.59 2.29 6.63 5.47 7.71.4.08.55-.18.55-.39 0-.19-.01-.83-.01-1.5-2.01.38-2.53-.5-2.69-.96-.09-.23-.48-.96-.82-1.16-.28-.15-.68-.53-.01-.54.63-.01 1.08.59 1.23.83.72 1.23 1.87.88 2.33.67.07-.53.28-.88.51-1.08-1.78-.21-3.64-.9-3.64-4 0-.88.31-1.61.82-2.18-.08-.2-.36-1.03.08-2.15 0 0 .67-.22 2.2.83A7.42 7.42 0 0 1 8 3.94c.68 0 1.36.09 2 .27 1.53-1.05 2.2-.83 2.2-.83.44 1.12.16 1.95.08 2.15.51.57.82 1.29.82 2.18 0 3.11-1.87 3.79-3.65 4 .29.25.54.74.54 1.5 0 1.08-.01 1.95-.01 2.22 0 .22.15.47.55.39A8.05 8.05 0 0 0 16 8.13C16 3.64 12.42 0 8 0Z"></path>
+            </svg>
+          </a>
+          <span aria-hidden="true">|</span>
+          <a class="footer-api-link" href="/api-docs" data-link>API Documents</a>
+        </p>
+      </div></footer>
+    </div>`;
     const createSession = async () => {
       const button = document.querySelector("#new-session") || document.querySelector("#empty-new");
       if (button) { button.disabled = true; button.textContent = "Creating…"; }
       try {
-        const session = await api("/api/sessions", { method: "POST", body: "{}" });
+        const session = await api("/api/v1/voting-sessions", { method: "POST" });
         navigate(`/session/${session.id}`);
       } catch (error) { showError(error); }
     };
@@ -212,7 +228,7 @@ async function saveSession({ immediate = false } = {}) {
     const state = document.querySelector("#save-state");
     if (state) state.textContent = "Saving…";
     try {
-      await api(`/api/sessions/${sessionId}`, { method: "PATCH", body: JSON.stringify(payload) });
+      await api(`/api/v1/voting-sessions/${sessionId}`, { method: "PUT", body: JSON.stringify(payload) });
       if (state) { state.textContent = "All changes saved"; state.classList.remove("error"); }
     } catch (error) {
       if (state) { state.textContent = error.message; state.classList.add("error"); }
@@ -286,7 +302,7 @@ function bindEditor() {
   document.querySelector("#delete-session")?.addEventListener("click", async () => {
     if (!window.confirm("Delete this voting session? Its public link will stop working.")) return;
     const button = document.querySelector("#delete-session"); button.disabled = true; button.textContent = "Deleting…";
-    try { await api(`/api/sessions/${activeSession.id}`, { method: "DELETE" }); activeSession = null; navigate("/"); }
+    try { await api(`/api/v1/voting-sessions/${activeSession.id}`, { method: "DELETE" }); activeSession = null; navigate("/"); }
     catch (error) { button.disabled = false; button.textContent = "Delete"; const state = document.querySelector("#save-state"); if (state) { state.textContent = error.message; state.classList.add("error"); } }
   });
 }
@@ -296,7 +312,7 @@ function renderEditorFromState() { app.innerHTML = editMarkup(activeSession); bi
 async function renderEditor(id) {
   loading("Preparing your session…");
   if (!(await requireAdmin())) return;
-  try { activeSession = await api(`/api/sessions/${encodeURIComponent(id)}`); renderEditorFromState(); }
+  try { activeSession = await api(`/api/v1/voting-sessions/${encodeURIComponent(id)}`); renderEditorFromState(); }
   catch (error) { if (error.status === 401) { currentUser = null; renderAuth(); } else showError(error); }
 }
 
@@ -313,7 +329,7 @@ async function renderResults(id, { quiet = false } = {}) {
   if (!quiet) loading("Tallying the results…");
   if (!(await requireAdmin())) return;
   try {
-    const [session, results] = await Promise.all([activeSession?.id === id ? activeSession : api(`/api/sessions/${encodeURIComponent(id)}`), api(`/api/sessions/${encodeURIComponent(id)}/results`)]);
+    const [session, results] = await Promise.all([activeSession?.id === id ? activeSession : api(`/api/v1/voting-sessions/${encodeURIComponent(id)}`), api(`/api/v1/voting-sessions/${encodeURIComponent(id)}/results`)]);
     activeSession = session; app.innerHTML = resultsMarkup(session, results); previousResults = results;
     bindLinks(); clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => { if (window.location.pathname === `/session/${id}` && new URLSearchParams(window.location.search).get("tab") === "view") renderResults(id, { quiet: true }); }, 5000);
@@ -335,7 +351,7 @@ function voteMarkup(session, selected) {
 async function renderVoting(id) {
   loading("Joining the vote…");
   try {
-    const session = await api(`/api/vote/${encodeURIComponent(id)}`);
+    const session = await api(`/api/v1/ballots/${encodeURIComponent(id)}`);
     const selectionKey = `instantvote-selection-${session.id}`;
     let selected = localStorage.getItem(selectionKey);
     if (!session.options.some((option) => option.id === selected)) selected = null;
@@ -344,7 +360,8 @@ async function renderVoting(id) {
       if (button.disabled) return;
       document.querySelectorAll("[data-vote]").forEach((choice) => { choice.disabled = true; choice.classList.add("waiting"); });
       try {
-        await api(`/api/vote/${session.id}`, { method: "POST", body: JSON.stringify({ optionId: button.dataset.vote, guestId: guestId() }) });
+        const voterId = guestId();
+        await api(`/api/v1/ballots/${session.id}/votes/${voterId}`, { method: "PUT", body: JSON.stringify({ answerId: button.dataset.vote }) });
         localStorage.setItem(selectionKey, button.dataset.vote);
         document.querySelectorAll("[data-vote]").forEach((choice) => { const isSelected = choice.dataset.vote === button.dataset.vote; choice.classList.toggle("selected", isSelected); choice.setAttribute("aria-pressed", String(isSelected)); choice.disabled = false; choice.classList.remove("waiting"); });
         document.querySelector("#vote-message")?.classList.add("visible");
@@ -360,10 +377,62 @@ async function renderHistory() {
   loading("Finding your votes…");
   try {
     const id = guestId();
-    const history = await api("/api/voting-history", { headers: { "X-Guest-ID": id } });
+    const history = await api(`/api/v1/guests/${id}/votes`);
     const rows = history.length ? history.map((item, index) => `<article class="history-item"><span class="answer-letter ${palette[index % palette.length]}">${String.fromCharCode(65 + (index % 26))}</span><div class="history-copy"><span>${item.live ? "Open session" : item.sessionAvailable ? "Voting closed" : "Session removed"}</span><h2>${escapeHtml(item.question)}</h2><p>You chose <strong>${escapeHtml(item.answerText)}</strong> · ${new Date(item.votedAt).toLocaleString()}</p></div>${item.sessionAvailable ? `<a href="/vote/${escapeHtml(item.sessionId)}" data-link>View vote →</a>` : ""}</article>`).join("") : `<div class="history-empty"><div class="card-icon blue">✓</div><h2>No votes on this device yet</h2><p>After you vote on a topic, it will appear here automatically.</p></div>`;
     app.innerHTML = `<div class="vote-shell"><header class="vote-topbar">${brand()}<span class="guest-badge">Guest ${escapeHtml(id.slice(-8))}</span></header><main class="history-page"><a href="/" data-link class="back-link"><span>←</span> Back</a><div class="history-heading"><p class="eyebrow">THIS DEVICE</p><h1>My voting history</h1><p>Your guest ID stays in this browser. Clearing browser storage removes access to this history.</p></div><div class="history-list">${rows}</div></main></div>`;
     bindLinks();
+  } catch (error) { showError(error); }
+}
+
+function scrollToApiExplanation() {
+  let id;
+  try { id = decodeURIComponent(window.location.hash.slice(1)); }
+  catch { return; }
+  if (id) document.getElementById(id)?.scrollIntoView({ block: "start" });
+}
+
+async function renderApiDocs() {
+  loading("Loading API reference…");
+  try {
+    const specification = await api("/openapi.json");
+    const methods = ["get", "post", "put", "patch", "delete"];
+    const operations = Object.entries(specification.paths).flatMap(([path, pathItem]) => methods
+      .filter((method) => pathItem[method])
+      .map((method) => ({ path, method, ...pathItem[method] })));
+    const basePath = specification.servers?.[0]?.url || "/api/v1";
+    const resolveReference = (reference) => reference?.startsWith("#/")
+      ? reference.slice(2).split("/").reduce((value, key) => value?.[key], specification)
+      : null;
+    const navigation = operations.map((operation) => `<a href="#${escapeHtml(operation.operationId)}"><span class="docs-method ${operation.method}">${operation.method.toUpperCase()}</span><code>${escapeHtml(operation.path)}</code></a>`).join("");
+    const endpointCards = operations.map((operation) => {
+      const authenticated = Array.isArray(operation.security) && operation.security.length > 0;
+      const requestSchema = operation.requestBody?.content?.["application/json"]?.schema?.$ref?.split("/").pop();
+      const responses = Object.entries(operation.responses || {}).map(([status, response]) => {
+        const resolvedResponse = response.$ref ? resolveReference(response.$ref) : response;
+        return `<span><b>${escapeHtml(status)}</b> ${escapeHtml(resolvedResponse?.description || "Response")}</span>`;
+      }).join("");
+      return `<article class="docs-endpoint" id="${escapeHtml(operation.operationId)}" tabindex="-1">
+        <div class="docs-endpoint-line"><span class="docs-method ${operation.method}">${operation.method.toUpperCase()}</span><code>${escapeHtml(basePath + operation.path)}</code><span class="docs-auth ${authenticated ? "required" : "public"}">${authenticated ? "Cookie auth" : "Public"}</span></div>
+        <h2>${escapeHtml(operation.summary || operation.operationId)}</h2>
+        <p>${escapeHtml(operation.description || "")}</p>
+        ${requestSchema ? `<div class="docs-request"><strong>JSON body</strong><code>${escapeHtml(requestSchema)}</code></div>` : ""}
+        <div class="docs-responses"><strong>Responses</strong><div>${responses}</div></div>
+      </article>`;
+    }).join("");
+
+    app.innerHTML = `<div class="docs-shell">
+      <header class="topbar docs-topbar">${brand()}<div><a class="docs-download" href="/openapi.json" target="_blank">OpenAPI JSON ↗</a><a class="secondary" href="/" data-link>Back to app</a></div></header>
+      <main class="docs-page">
+        <aside class="docs-sidebar"><p class="eyebrow">API REFERENCE</p><h2>${escapeHtml(specification.info.title)}</h2><p>Version ${escapeHtml(specification.info.version)}</p><div class="docs-base"><span>Base path</span><code>${escapeHtml(basePath)}</code></div><nav>${navigation}</nav></aside>
+        <section class="docs-content">
+          <div class="docs-hero"><p class="eyebrow">OPENAPI ${escapeHtml(specification.openapi)}</p><h1>InstantVote API</h1><p>${escapeHtml(specification.info.description)}</p><div class="docs-summary"><span><strong>${operations.length}</strong> operations</span><span><strong>JSON</strong> request bodies</span><span><strong>UUID</strong> resource IDs</span></div></div>
+          <section class="docs-auth-card"><div class="docs-lock">●</div><div><h2>Authentication</h2><p>Owner endpoints use the secure <code>instantvote_admin_session</code> cookie created by the login-session resource. Ballots and guest vote history are public.</p></div></section>
+          <div class="docs-endpoints">${endpointCards}</div>
+        </section>
+      </main>
+    </div>`;
+    bindLinks();
+    scrollToApiExplanation();
   } catch (error) { showError(error); }
 }
 
@@ -374,8 +443,10 @@ function renderNotFound() {
 
 function renderRoute() {
   clearTimeout(refreshTimer);
+  renderedRoute = window.location.pathname + window.location.search;
   const route = window.location.pathname.replace(/\/$/, "") || "/";
   if (route === "/") return renderDashboard();
+  if (route === "/api-docs") return renderApiDocs();
   if (route === "/history") return renderHistory();
   const sessionMatch = route.match(/^\/session\/([^/]+)$/);
   if (sessionMatch) { const tab = new URLSearchParams(window.location.search).get("tab"); return tab === "view" ? renderResults(decodeURIComponent(sessionMatch[1])) : renderEditor(decodeURIComponent(sessionMatch[1])); }
@@ -384,5 +455,8 @@ function renderRoute() {
   renderNotFound();
 }
 
-window.addEventListener("popstate", renderRoute);
+window.addEventListener("popstate", () => {
+  // Native fragment navigation scrolls in-place; only rebuild for a different page or tab.
+  if (renderedRoute !== window.location.pathname + window.location.search) renderRoute();
+});
 renderRoute();

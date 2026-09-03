@@ -1,0 +1,446 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "InstantVote API",
+    "version": "1.0.0",
+    "description": "Resource-oriented JSON API for account sessions, voting sessions, public ballots, votes, results, and guest voting history."
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "Current InstantVote host"
+    }
+  ],
+  "tags": [
+    { "name": "Users", "description": "Account resources." },
+    { "name": "Login sessions", "description": "Cookie-authenticated login-session resources." },
+    { "name": "Voting sessions", "description": "Owner-managed voting-session resources." },
+    { "name": "Ballots", "description": "Public ballot and vote resources." },
+    { "name": "Guests", "description": "Guest-scoped voting history." }
+  ],
+  "paths": {
+    "/users": {
+      "post": {
+        "tags": ["Users"],
+        "operationId": "createUser",
+        "summary": "Create an account",
+        "description": "Creates a username-based account and starts a login session in the same response.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UserRegistration" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created",
+            "headers": { "Location": { "$ref": "#/components/headers/Location" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/users/{userId}": {
+      "get": {
+        "tags": ["Users"],
+        "operationId": "getUser",
+        "summary": "Get the signed-in user",
+        "description": "Returns the requested account when it belongs to the active login session.",
+        "security": [{ "cookieSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/UserId" }],
+        "responses": {
+          "200": { "description": "User", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/login-sessions": {
+      "post": {
+        "tags": ["Login sessions"],
+        "operationId": "createLoginSession",
+        "summary": "Sign in",
+        "description": "Creates a server-side login session and sets its secure HTTP-only cookie.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginCredentials" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Login session created",
+            "headers": { "Location": { "$ref": "#/components/headers/Location" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginSession" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "description": "Too many sign-in attempts", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/login-sessions/current": {
+      "get": {
+        "tags": ["Login sessions"],
+        "operationId": "getCurrentLoginSession",
+        "summary": "Get the current login session",
+        "security": [{ "cookieSession": [] }],
+        "responses": {
+          "200": { "description": "Current login session", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginSession" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "delete": {
+        "tags": ["Login sessions"],
+        "operationId": "deleteCurrentLoginSession",
+        "summary": "Sign out",
+        "description": "Revokes the current login session and clears its cookie. The operation is idempotent.",
+        "responses": {
+          "204": { "description": "Login session removed" }
+        }
+      }
+    },
+    "/voting-sessions": {
+      "get": {
+        "tags": ["Voting sessions"],
+        "operationId": "listVotingSessions",
+        "summary": "List owned voting sessions",
+        "security": [{ "cookieSession": [] }],
+        "responses": {
+          "200": { "description": "Voting-session collection", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/VotingSessionSummary" } } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["Voting sessions"],
+        "operationId": "createVotingSession",
+        "summary": "Create a voting session",
+        "description": "Creates a voting session with a starter topic and three answer choices.",
+        "security": [{ "cookieSession": [] }],
+        "responses": {
+          "201": {
+            "description": "Voting session created",
+            "headers": { "Location": { "$ref": "#/components/headers/Location" } },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VotingSessionSummary" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/voting-sessions/{sessionId}": {
+      "get": {
+        "tags": ["Voting sessions"],
+        "operationId": "getVotingSession",
+        "summary": "Get a voting session",
+        "security": [{ "cookieSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+        "responses": {
+          "200": { "description": "Voting session", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VotingSession" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Voting sessions"],
+        "operationId": "replaceVotingSession",
+        "summary": "Replace a voting session",
+        "description": "Replaces the editable topic, ordered answer collection, and open state.",
+        "security": [{ "cookieSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VotingSessionReplacement" } } }
+        },
+        "responses": {
+          "200": { "description": "Voting session replaced", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VotingSessionSummary" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      },
+      "delete": {
+        "tags": ["Voting sessions"],
+        "operationId": "deleteVotingSession",
+        "summary": "Delete a voting session",
+        "description": "Soft-deletes the session and closes its public ballot.",
+        "security": [{ "cookieSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+        "responses": {
+          "204": { "description": "Voting session deleted" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/voting-sessions/{sessionId}/results": {
+      "get": {
+        "tags": ["Voting sessions"],
+        "operationId": "getVotingSessionResults",
+        "summary": "Get voting-session results",
+        "security": [{ "cookieSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+        "responses": {
+          "200": { "description": "Aggregated results", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VotingResults" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/ballots/{sessionId}": {
+      "get": {
+        "tags": ["Ballots"],
+        "operationId": "getBallot",
+        "summary": "Get a public ballot",
+        "description": "Returns the public topic, answer choices, and open state without exposing results.",
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }],
+        "responses": {
+          "200": { "description": "Public ballot", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ballot" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/ballots/{sessionId}/votes/{guestId}": {
+      "get": {
+        "tags": ["Ballots"],
+        "operationId": "getGuestVote",
+        "summary": "Get a guest vote",
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }, { "$ref": "#/components/parameters/GuestId" }],
+        "responses": {
+          "200": { "description": "Guest vote", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Vote" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Ballots"],
+        "operationId": "putGuestVote",
+        "summary": "Create or replace a guest vote",
+        "description": "Idempotently sets one answer for this guest and voting session.",
+        "parameters": [{ "$ref": "#/components/parameters/SessionId" }, { "$ref": "#/components/parameters/GuestId" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VoteReplacement" } } }
+        },
+        "responses": {
+          "200": { "description": "Existing vote replaced", "headers": { "Location": { "$ref": "#/components/headers/Location" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Vote" } } } },
+          "201": { "description": "Vote created", "headers": { "Location": { "$ref": "#/components/headers/Location" } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Vote" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/guests/{guestId}/votes": {
+      "get": {
+        "tags": ["Guests"],
+        "operationId": "listGuestVotes",
+        "summary": "List a guest's voting history",
+        "description": "Returns the current vote for every voting session answered by this browser guest ID.",
+        "parameters": [{ "$ref": "#/components/parameters/GuestId" }],
+        "responses": {
+          "200": { "description": "Guest vote collection", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/HistoryVote" } } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "cookieSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "instantvote_admin_session",
+        "description": "HTTP-only cookie returned when a login session is created."
+      }
+    },
+    "headers": {
+      "Location": {
+        "description": "Canonical URL of the created or replaced resource.",
+        "schema": { "type": "string" }
+      }
+    },
+    "parameters": {
+      "UserId": { "name": "userId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
+      "SessionId": { "name": "sessionId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } },
+      "GuestId": { "name": "guestId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Uuid" } }
+    },
+    "responses": {
+      "BadRequest": { "description": "Invalid request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unauthorized": { "description": "Missing or invalid login session", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "Resource not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Conflict": { "description": "Resource state conflict", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "Uuid": { "type": "string", "format": "uuid", "examples": ["b105ec3b-5735-4a58-a0f9-5013434fa53f"] },
+      "Timestamp": { "type": "string", "format": "date-time" },
+      "User": {
+        "type": "object",
+        "required": ["id", "username"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "username": { "type": "string", "pattern": "^[A-Za-z0-9_-]{3,40}$", "examples": ["instant_owner"] }
+        }
+      },
+      "UserRegistration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string", "pattern": "^[A-Za-z0-9_-]{3,40}$" },
+          "password": { "type": "string", "format": "password", "minLength": 10, "maxLength": 200 }
+        }
+      },
+      "LoginCredentials": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string" },
+          "password": { "type": "string", "format": "password" }
+        }
+      },
+      "LoginSession": {
+        "type": "object",
+        "required": ["id", "createdAt", "expiresAt", "user"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" },
+          "expiresAt": { "$ref": "#/components/schemas/Timestamp" },
+          "user": { "$ref": "#/components/schemas/User" }
+        }
+      },
+      "Answer": {
+        "type": "object",
+        "required": ["id", "text"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "text": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      },
+      "AnswerInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "text": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      },
+      "VotingSessionSummary": {
+        "type": "object",
+        "required": ["id", "question", "optionsCount", "totalVotes", "live", "createdAt", "updatedAt"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "question": { "type": "string", "description": "Voting topic", "minLength": 1, "maxLength": 500 },
+          "optionsCount": { "type": "integer", "minimum": 2 },
+          "totalVotes": { "type": "integer", "minimum": 0 },
+          "live": { "type": "boolean" },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "VotingSession": {
+        "allOf": [
+          { "$ref": "#/components/schemas/VotingSessionSummary" },
+          {
+            "type": "object",
+            "required": ["options", "votingUrl", "qrCode"],
+            "properties": {
+              "options": { "type": "array", "minItems": 2, "maxItems": 20, "items": { "$ref": "#/components/schemas/Answer" } },
+              "votingUrl": { "type": "string", "format": "uri" },
+              "qrCode": { "type": "string", "pattern": "^data:image/png;base64," }
+            }
+          }
+        ]
+      },
+      "VotingSessionReplacement": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "options", "live"],
+        "properties": {
+          "question": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "options": { "type": "array", "minItems": 2, "maxItems": 20, "items": { "$ref": "#/components/schemas/AnswerInput" } },
+          "live": { "type": "boolean" }
+        }
+      },
+      "ResultAnswer": {
+        "allOf": [
+          { "$ref": "#/components/schemas/Answer" },
+          {
+            "type": "object",
+            "required": ["votes", "percentage"],
+            "properties": {
+              "votes": { "type": "integer", "minimum": 0 },
+              "percentage": { "type": "integer", "minimum": 0, "maximum": 100 }
+            }
+          }
+        ]
+      },
+      "VotingResults": {
+        "type": "object",
+        "required": ["id", "question", "live", "totalVotes", "updatedAt", "options"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "question": { "type": "string" },
+          "live": { "type": "boolean" },
+          "totalVotes": { "type": "integer", "minimum": 0 },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "options": { "type": "array", "items": { "$ref": "#/components/schemas/ResultAnswer" } }
+        }
+      },
+      "Ballot": {
+        "type": "object",
+        "required": ["id", "question", "options", "live"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "question": { "type": "string", "description": "Voting topic" },
+          "options": { "type": "array", "items": { "$ref": "#/components/schemas/Answer" } },
+          "live": { "type": "boolean" }
+        }
+      },
+      "VoteReplacement": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["answerId"],
+        "properties": { "answerId": { "$ref": "#/components/schemas/Uuid" } }
+      },
+      "Vote": {
+        "type": "object",
+        "required": ["id", "sessionId", "guestId", "answerId", "createdAt", "updatedAt"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/Uuid" },
+          "sessionId": { "$ref": "#/components/schemas/Uuid" },
+          "guestId": { "$ref": "#/components/schemas/Uuid" },
+          "answerId": { "$ref": "#/components/schemas/Uuid" },
+          "totalVotes": { "type": "integer", "minimum": 0 },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "HistoryVote": {
+        "type": "object",
+        "required": ["voteId", "sessionId", "question", "answerId", "answerText", "votedAt", "sessionAvailable", "live"],
+        "properties": {
+          "voteId": { "$ref": "#/components/schemas/Uuid" },
+          "sessionId": { "$ref": "#/components/schemas/Uuid" },
+          "question": { "type": "string" },
+          "answerId": { "$ref": "#/components/schemas/Uuid" },
+          "answerText": { "type": "string" },
+          "votedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "sessionAvailable": { "type": "boolean" },
+          "live": { "type": "boolean" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" } }
+      }
+    }
+  }
+}

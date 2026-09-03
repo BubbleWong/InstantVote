@@ -13,7 +13,7 @@ function jsonRequest(body, cookie, headers = {}) {
   };
 }
 
-test("persists authenticated sessions, changeable guest votes, history, and soft deletion", async (t) => {
+test("serves the documented REST API and persists its resources", async (t) => {
   const schema = `instantvote_test_${crypto.randomBytes(6).toString("hex")}`;
   const pool = await createPool({ schema });
   await migrate(pool, schema);
@@ -30,58 +30,81 @@ test("persists authenticated sessions, changeable guest votes, history, and soft
   const base = `http://127.0.0.1:${server.address().port}`;
   const request = (path, options = {}) => fetch(`${base}${path}`, options);
 
-  assert.equal((await request("/api/sessions")).status, 401);
+  const specificationResponse = await request("/openapi.json");
+  assert.equal(specificationResponse.status, 200);
+  assert.equal((await specificationResponse.json()).openapi, "3.1.0");
+  assert.equal((await request("/api-docs")).status, 200);
+
+  const unknownApi = await request("/api/v1/not-a-resource");
+  assert.equal(unknownApi.status, 404);
+  assert.match(unknownApi.headers.get("content-type"), /application\/json/);
+  assert.equal((await unknownApi.json()).error, "API resource not found");
+  assert.equal((await request("/api/sessions")).status, 404);
+  assert.equal((await request("/api/v1/voting-sessions")).status, 401);
 
   for (const username of ["has spaces", "has.dot", "has@symbol"]) {
-    const rejected = await request("/api/auth/register", {
+    const rejected = await request("/api/v1/users", {
       method: "POST",
       ...jsonRequest({ username, password: "a-safe-test-password" }),
     });
     assert.equal(rejected.status, 400);
   }
 
-  const registration = await request("/api/auth/register", {
+  const registration = await request("/api/v1/users", {
     method: "POST",
     ...jsonRequest({ username: "test_admin-2", password: "a-safe-test-password" }),
   });
   assert.equal(registration.status, 201);
   let cookie = registration.headers.get("set-cookie").split(";", 1)[0];
   const account = await registration.json();
-  assert.match(account.user.id, UUID_PATTERN);
-  assert.equal(account.user.username, "test_admin-2");
-  assert.equal(account.user.password, undefined);
-  assert.equal(account.user.email, undefined);
+  assert.match(account.id, UUID_PATTERN);
+  assert.equal(registration.headers.get("location"), `/api/v1/users/${account.id}`);
+  assert.equal(account.username, "test_admin-2");
+  assert.equal(account.password, undefined);
+
+  const userResponse = await request(`/api/v1/users/${account.id}`, { headers: { cookie } });
+  assert.equal(userResponse.status, 200);
+  assert.equal((await userResponse.json()).username, "test_admin-2");
+
+  const currentRegistrationSession = await request("/api/v1/login-sessions/current", { headers: { cookie } });
+  assert.equal(currentRegistrationSession.status, 200);
+  assert.match((await currentRegistrationSession.json()).id, UUID_PATTERN);
 
   const userColumns = await pool.query(
     `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'users'`,
     [schema],
   );
   assert.equal(userColumns.rows.some((column) => column.column_name === "email"), false);
-
-  const storedUser = await pool.query(`SELECT password_hash FROM users WHERE id = $1`, [account.user.id]);
+  const storedUser = await pool.query(`SELECT password_hash FROM users WHERE id = $1`, [account.id]);
   assert.match(storedUser.rows[0].password_hash, /^\$2[aby]\$/);
-  const storedLogin = await pool.query(`SELECT token_hash FROM admin_sessions WHERE user_id = $1`, [account.user.id]);
-  assert.equal(storedLogin.rows[0].token_hash.length, 64);
-  assert.notEqual(storedLogin.rows[0].token_hash, cookie.split("=")[1]);
 
-  assert.equal((await request("/api/auth/logout", { method: "POST", headers: { cookie } })).status, 204);
-  const login = await request("/api/auth/login", {
+  assert.equal((await request("/api/v1/login-sessions/current", { method: "DELETE", headers: { cookie } })).status, 204);
+  const login = await request("/api/v1/login-sessions", {
     method: "POST",
     ...jsonRequest({ username: "test_admin-2", password: "a-safe-test-password" }),
   });
-  assert.equal(login.status, 200);
+  assert.equal(login.status, 201);
+  assert.equal(login.headers.get("location"), "/api/v1/login-sessions/current");
   cookie = login.headers.get("set-cookie").split(";", 1)[0];
-  assert.equal((await login.json()).user.email, undefined);
+  const loginBody = await login.json();
+  assert.match(loginBody.id, UUID_PATTERN);
+  assert.equal(loginBody.user.username, "test_admin-2");
 
-  const createdResponse = await request("/api/sessions", { method: "POST", ...jsonRequest({}, cookie) });
+  const createdResponse = await request("/api/v1/voting-sessions", { method: "POST", headers: { cookie } });
   assert.equal(createdResponse.status, 201);
   const created = await createdResponse.json();
   assert.match(created.id, UUID_PATTERN);
+  assert.equal(createdResponse.headers.get("location"), `/api/v1/voting-sessions/${created.id}`);
 
-  const detailResponse = await request(`/api/sessions/${created.id}`, { headers: { cookie } });
+  const collection = await request("/api/v1/voting-sessions", { headers: { cookie } }).then((response) => response.json());
+  assert.equal(collection.length, 1);
+  assert.equal(collection[0].id, created.id);
+
+  const detailResponse = await request(`/api/v1/voting-sessions/${created.id}`, { headers: { cookie } });
   assert.equal(detailResponse.status, 200);
   const detail = await detailResponse.json();
   assert.equal(detail.options.length, 3);
+  assert.equal(detail.optionsCount, 3);
   assert.match(detail.options[0].id, UUID_PATTERN);
   assert.match(detail.qrCode, /^data:image\/png;base64,/);
   assert.equal(detail.votingUrl, `${base}/vote/${created.id}`);
@@ -90,18 +113,21 @@ test("persists authenticated sessions, changeable guest votes, history, and soft
     id: option.id,
     text: `Answer ${index + 1}`,
   }));
-  const updateResponse = await request(`/api/sessions/${created.id}`, {
-    method: "PATCH",
+  const updateResponse = await request(`/api/v1/voting-sessions/${created.id}`, {
+    method: "PUT",
     ...jsonRequest({ question: "Which answer?", options: reorderedOptions, live: true }, cookie),
   });
   assert.equal(updateResponse.status, 200);
-  const updated = await request(`/api/sessions/${created.id}`, { headers: { cookie } }).then((response) => response.json());
+  const updateBody = await updateResponse.json();
+  assert.match(updateBody.createdAt, /T/);
+  assert.match(updateBody.updatedAt, /T/);
+  const updated = await request(`/api/v1/voting-sessions/${created.id}`, { headers: { cookie } }).then((response) => response.json());
   assert.deepEqual(updated.options.map((option) => option.id), reorderedOptions.map((option) => option.id));
 
-  const secondSession = await request("/api/sessions", { method: "POST", ...jsonRequest({}, cookie) }).then((response) => response.json());
-  const secondDetail = await request(`/api/sessions/${secondSession.id}`, { headers: { cookie } }).then((response) => response.json());
-  const foreignAnswerResponse = await request(`/api/sessions/${secondSession.id}`, {
-    method: "PATCH",
+  const secondSession = await request("/api/v1/voting-sessions", { method: "POST", headers: { cookie } }).then((response) => response.json());
+  const secondDetail = await request(`/api/v1/voting-sessions/${secondSession.id}`, { headers: { cookie } }).then((response) => response.json());
+  const foreignAnswerResponse = await request(`/api/v1/voting-sessions/${secondSession.id}`, {
+    method: "PUT",
     ...jsonRequest({
       question: "Keep session answers isolated?",
       live: true,
@@ -110,35 +136,46 @@ test("persists authenticated sessions, changeable guest votes, history, and soft
   });
   assert.equal(foreignAnswerResponse.status, 400);
 
-  const guestId = crypto.randomUUID();
-  const vote = (optionId) => request(`/api/vote/${created.id}`, {
-    method: "POST",
-    ...jsonRequest({ optionId, guestId }),
-  });
-  assert.equal((await vote(reorderedOptions[0].id)).status, 200);
-  assert.equal((await vote(reorderedOptions[1].id)).status, 200);
+  const ballot = await request(`/api/v1/ballots/${created.id}`).then((response) => response.json());
+  assert.equal(ballot.id, created.id);
+  assert.equal(ballot.options.length, 3);
 
-  const results = await request(`/api/sessions/${created.id}/results`, { headers: { cookie } }).then((response) => response.json());
+  const guestId = crypto.randomUUID();
+  const votePath = `/api/v1/ballots/${created.id}/votes/${guestId}`;
+  assert.equal((await request(votePath)).status, 404);
+  const firstVote = await request(votePath, { method: "PUT", ...jsonRequest({ answerId: reorderedOptions[0].id }) });
+  assert.equal(firstVote.status, 201);
+  assert.equal(firstVote.headers.get("location"), votePath);
+  const firstVoteBody = await firstVote.json();
+  assert.match(firstVoteBody.id, UUID_PATTERN);
+  const changedVote = await request(votePath, { method: "PUT", ...jsonRequest({ answerId: reorderedOptions[1].id }) });
+  assert.equal(changedVote.status, 200);
+  assert.equal((await changedVote.json()).id, firstVoteBody.id);
+
+  const storedVote = await request(votePath).then((response) => response.json());
+  assert.equal(storedVote.answerId, reorderedOptions[1].id);
+  const results = await request(`/api/v1/voting-sessions/${created.id}/results`, { headers: { cookie } }).then((response) => response.json());
   assert.equal(results.totalVotes, 1);
   assert.equal(results.options[0].votes, 0);
   assert.equal(results.options[1].votes, 1);
   assert.equal(results.options[1].percentage, 100);
 
-  const history = await request("/api/voting-history", { headers: { "x-guest-id": guestId } }).then((response) => response.json());
+  const history = await request(`/api/v1/guests/${guestId}/votes`).then((response) => response.json());
   assert.equal(history.length, 1);
+  assert.equal(history[0].voteId, firstVoteBody.id);
   assert.equal(history[0].sessionId, created.id);
   assert.equal(history[0].answerId, reorderedOptions[1].id);
   assert.equal(history[0].answerText, "Answer 2");
 
-  const deletion = await request(`/api/sessions/${created.id}`, { method: "DELETE", headers: { cookie } });
+  const deletion = await request(`/api/v1/voting-sessions/${created.id}`, { method: "DELETE", headers: { cookie } });
   assert.equal(deletion.status, 204);
-  assert.equal((await request(`/api/vote/${created.id}`)).status, 404);
+  assert.equal((await request(`/api/v1/ballots/${created.id}`)).status, 404);
   const deletedRow = await pool.query(`SELECT deleted_at, is_open FROM vote_sessions WHERE id = $1`, [created.id]);
   assert.ok(deletedRow.rows[0].deleted_at);
   assert.equal(deletedRow.rows[0].is_open, false);
-  const deletedHistory = await request("/api/voting-history", { headers: { "x-guest-id": guestId } }).then((response) => response.json());
+  const deletedHistory = await request(`/api/v1/guests/${guestId}/votes`).then((response) => response.json());
   assert.equal(deletedHistory[0].sessionAvailable, false);
 
-  assert.equal((await request("/api/auth/logout", { method: "POST", headers: { cookie } })).status, 204);
-  assert.equal((await request("/api/auth/me", { headers: { cookie } })).status, 401);
+  assert.equal((await request("/api/v1/login-sessions/current", { method: "DELETE", headers: { cookie } })).status, 204);
+  assert.equal((await request("/api/v1/login-sessions/current", { headers: { cookie } })).status, 401);
 });
