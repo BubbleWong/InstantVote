@@ -25,6 +25,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 #app { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #app > div { flex: 1; min-width: 0; }
 
+/* Keep the home footer in view without covering a long session list or sign-in form. */
+body:has(#app > .dashboard-shell), body:has(#app > .auth-shell) { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+body:has(#app > .dashboard-shell) #app, body:has(#app > .auth-shell) #app { min-height: 0; overflow-y: auto; }
+
 .topbar, .vote-topbar { height: 82px; padding: 0 7vw; background: rgba(255, 255, 255, 0.92); border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; backdrop-filter: blur(18px); }
 .brand { display: flex; align-items: center; gap: 11px; text-decoration: none; color: var(--ink); font: 800 21px/1 "Manrope", sans-serif; letter-spacing: -0.7px; }
 .brand > span:last-child span, .powered-by span { color: var(--blue); }
@@ -78,7 +82,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .dashboard-shell > .topbar { flex-shrink: 0; }
 .dashboard-shell > .dashboard { flex: 1; width: 100%; }
 .site-footer { flex-shrink: 0; border-top: 1px solid var(--line); background: var(--surface); }
-.site-footer-inner { max-width: 1190px; margin: 0 auto; padding: 26px 36px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.site-footer-inner { max-width: 1190px; margin: 0 auto; padding: 18px 36px; display: flex; align-items: center; justify-content: center; gap: 24px; }
 .footer-copyright { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin: 0; color: rgba(23, 32, 51, 0.68); font-family: Inter, ui-rounded, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 0.78rem; font-weight: 850; text-align: center; }
 .footer-copyright a { color: inherit; text-decoration: none; white-space: nowrap; }
 .footer-copyright a:focus-visible { border-radius: 4px; outline: 2px solid #172033; outline-offset: 3px; }
@@ -387,7 +391,7 @@ textarea:focus, .answer-input:focus { border-color: #aab8f5; box-shadow: 0 0 0 4
   .auth-card { padding: 9px 22px 26px; border-radius: 19px; }
   .auth-tabs { margin-left: -22px; margin-right: -22px; padding: 0 17px; }
   .dashboard { padding: 48px 20px 80px; }
-  .site-footer-inner { padding: 24px 20px; flex-direction: column; align-items: flex-start; gap: 18px; }
+  .site-footer-inner { padding: 16px 20px; flex-direction: column; align-items: center; gap: 18px; }
   .page-heading, .editor-heading, .results-heading { align-items: flex-start; flex-direction: column; }
   .page-heading .primary { width: 100%; }
   .session-list { border-radius: 14px; }

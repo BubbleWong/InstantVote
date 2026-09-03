@@ -106,6 +106,8 @@ for (const page of pages) {
     if (page.register) registerClick();
     assert.ok(app.innerHTML.includes(page.expected), `${page.name} should render successfully`);
     assert.equal(app.innerHTML.includes("<footer"), false, "route rendering must not create a duplicate footer");
+    assert.equal((`${app.innerHTML}${footer}`.match(/class="footer-copyright"/g) || []).length, 1,
+      "the rendered page and shared shell must contain exactly one copyright section");
     assert.equal(handlers.length, 1, "persistent footer navigation should be bound only once");
 
     for (const modifier of ["ctrlKey", "metaKey", "shiftKey", "altKey"]) {
@@ -118,6 +120,8 @@ for (const page of pages) {
     assert.equal(prevented, true);
     assert.equal(location.pathname, "/api-docs");
     assert.ok(app.innerHTML.includes('class="docs-shell"'));
+    assert.equal((`${app.innerHTML}${footer}`.match(/class="footer-copyright"/g) || []).length, 1,
+      "switching pages must not add another copyright section");
     assert.equal(handlers.length, 1, "navigation must not bind duplicate footer handlers");
   });
 }

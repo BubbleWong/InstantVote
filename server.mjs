@@ -15,6 +15,17 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SESSION_COOKIE = "instantvote_admin_session";
 const PASSWORD_ROUNDS = 12;
 
+async function renderFrontend(ctx) {
+  const [html, script, styles] = await Promise.all(
+    ["index.html", "app.js", "styles.css"].map((file) => fs.readFile(path.join(root, "public", file), "utf8")),
+  );
+  // A fresh shell must not reuse a cached renderer that still inserts its own footer.
+  const version = crypto.createHash("sha256").update([html, script, styles].join("\0")).digest("hex").slice(0, 16);
+  ctx.type = "html";
+  ctx.set("Cache-Control", "no-store");
+  ctx.body = html.replace(/(href|src)="\/(styles\.css|app\.js)"/g, `$1="/$2?v=${version}"`);
+}
+
 function httpError(status, message) {
   const error = new Error(message);
   error.status = status;
@@ -544,14 +555,20 @@ export function createApp({ pool, sessionDays = Number(process.env.ADMIN_SESSION
     }
     await next();
   });
+  app.use(async (ctx, next) => {
+    if (["GET", "HEAD"].includes(ctx.method) && ["/", "/index.html"].includes(ctx.path)) {
+      await renderFrontend(ctx);
+      return;
+    }
+    await next();
+  });
   app.use(serve(path.join(root, "public")));
   app.use(async (ctx) => {
     if (ctx.method !== "GET") {
       ctx.status = 404;
       return;
     }
-    ctx.type = "html";
-    ctx.body = await fs.readFile(path.join(root, "public", "index.html"), "utf8");
+    await renderFrontend(ctx);
   });
 
   return app;
